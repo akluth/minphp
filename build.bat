@@ -18,6 +18,7 @@ echo Building fastest PHP PoC with clang...
     -fno-exceptions ^
     -fno-rtti ^
     -s ^
+    -fasm-blocks ^
     %SRC% -o %OUT%
 
 if errorlevel 1 (

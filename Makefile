@@ -1,6 +1,6 @@
 # Makefile for extreme speed (Linux/macOS + clang/gcc)
 CC ?= clang
-CFLAGS ?= -O3 -march=native -mtune=native -flto -fomit-frame-pointer -fno-stack-protector -ffast-math -funroll-loops -s
+CFLAGS ?= -O3 -march=native -mtune=native -flto -fomit-frame-pointer -fno-stack-protector -ffast-math -funroll-loops -s -fasm-blocks
 
 all: minphp
 

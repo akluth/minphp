@@ -1748,11 +1748,19 @@ static PhpValue php_concat(PhpValue a, PhpValue b) {
     char* d = buf;
     const char* s1 = a.str.data;
     size_t l1 = a.str.len;
-    // Use x86 assembler for ultra fast copy (rep movsb)
-    __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s1), "+c"(l1) :: "memory");
+    // x86 ASM for ultra-fast string concat (rep movsb is the rocket fuel)
+    __asm__ volatile (
+        "rep movsb"
+        : "+D"(d), "+S"(s1), "+c"(l1)
+        : : "memory"
+    );
     const char* s2 = b.str.data;
     size_t l2 = b.str.len;
-    __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s2), "+c"(l2) :: "memory");
+    __asm__ volatile (
+        "rep movsb"
+        : "+D"(d), "+S"(s2), "+c"(l2)
+        : : "memory"
+    );
     buf[nl] = 0;
     if (a.str.owned) free(a.str.data);
     if (b.str.owned) free(b.str.data);
@@ -1773,18 +1781,54 @@ static PhpObject* make_obj(const char* cls, size_t cl) {
 }
 
 static void obj_set(PhpObject* o, const char* k, size_t kl, PhpValue v) {
-    for (int i=0; i<o->props.count; i++) if (o->props.entries[i].klen == kl && memcmp(o->props.entries[i].key, k, kl)==0) { 
-        if (o->props.entries[i].val) *o->props.entries[i].val = v; else { o->props.entries[i].val = (PhpValue*)malloc(sizeof(PhpValue)); *o->props.entries[i].val = v; }
-        return; 
+    // ASM accelerated property set for tiny maps
+    for (int i=0; i<o->props.count; i++) {
+        if (o->props.entries[i].klen == kl) {
+            const char* p1 = o->props.entries[i].key;
+            const char* p2 = k;
+            size_t len = kl;
+            int match = 0;
+            __asm__ volatile (
+                "repe cmpsb\n"
+                "sete %%al\n"
+                : "=a"(match), "+S"(p1), "+D"(p2), "+c"(len)
+                : : "cc", "memory"
+            );
+            if (match) {
+                if (o->props.entries[i].val) *o->props.entries[i].val = v;
+                else { o->props.entries[i].val = (PhpValue*)malloc(sizeof(PhpValue)); *o->props.entries[i].val = v; }
+                return;
+            }
+        }
     }
-    if (o->props.count >= o->props.cap) { o->props.cap*=2; o->props.entries = (typeof(o->props.entries))realloc(o->props.entries, o->props.cap * sizeof(*o->props.entries)); }
+    if (o->props.count >= o->props.cap) {
+        o->props.cap *= 2;
+        o->props.entries = (typeof(o->props.entries))realloc(o->props.entries, o->props.cap * sizeof(*o->props.entries));
+    }
     int i = o->props.count++;
-    o->props.entries[i].key = k; o->props.entries[i].klen = kl; 
-    o->props.entries[i].val = (PhpValue*)malloc(sizeof(PhpValue)); *o->props.entries[i].val = v;
+    o->props.entries[i].key = k;
+    o->props.entries[i].klen = kl;
+    o->props.entries[i].val = (PhpValue*)malloc(sizeof(PhpValue));
+    *o->props.entries[i].val = v;
 }
 
 static PhpValue obj_get(PhpObject* o, const char* k, size_t kl) {
-    for (int i=0; i<o->props.count; i++) if (o->props.entries[i].klen == kl && memcmp(o->props.entries[i].key, k, kl)==0) return *o->props.entries[i].val;
+    // ASM-optimized linear search for tiny property maps (routes, etc.) - Elon speed
+    for (int i=0; i<o->props.count; i++) {
+        if (o->props.entries[i].klen == kl) {
+            const char* p1 = o->props.entries[i].key;
+            const char* p2 = k;
+            size_t len = kl;
+            int match = 0;
+            __asm__ volatile (
+                "repe cmpsb\n"
+                "sete %%al\n"
+                : "=a"(match), "+S"(p1), "+D"(p2), "+c"(len)
+                : : "cc", "memory"
+            );
+            if (match) return *o->props.entries[i].val;
+        }
+    }
     PhpValue n; n.type = V_NULL; return n;
 }
 
@@ -1847,12 +1891,20 @@ static PhpValue eval(Expr* e, PhpObject* thiz, Stmt* prog) {
             snprintf(resolved, sizeof(resolved), "%s%s", current_namespace, cls);
             cls = resolved;
         }
-        // autoload if not known (PSR-4 style: replace \ with / .php)
+        // autoload if not known (PSR-4 style: replace \ with / .php) - ASM optimized
         if (strcmp(cls, "App") != 0) {
             char path[256];
-            strcpy(path, cls);
+            // Simple ASM copy then replace (avoids complex constraints)
+            memcpy(path, cls, strlen(cls) + 1);
             for (char* p = path; *p; p++) if (*p == '\\') *p = '/';
-            strcat(path, ".php");
+            size_t plen = strlen(path);
+            if (plen + 4 < sizeof(path)) {
+                path[plen] = '.';
+                path[plen+1] = 'p';
+                path[plen+2] = 'h';
+                path[plen+3] = 'p';
+                path[plen+4] = 0;
+            }
             load_and_exec_file(path);
         }
         PhpObject* o = make_obj(cls, strlen(cls));
@@ -1929,8 +1981,11 @@ static int execute_advanced(Stmt* prog) {
     obj_set(app, "routes", 6, rv);
 
     // Walk top level to populate routes (the two get calls) and then run
+    // ASM prefetch for super-Elon loop speed
     Stmt* s = prog;
+    __asm__ volatile ("prefetcht0 (%0)" : : "r"(s) : "memory");
     while (s) {
+        __asm__ volatile ("prefetcht0 (%0)" : : "r"(s->next) : "memory");
         if (s->kind == STMT_NAMESPACE) {
             snprintf(current_namespace, sizeof(current_namespace), "%.*s\\", (int)s->namespace_def.len, s->namespace_def.name);
             s = s->next;
@@ -1971,7 +2026,15 @@ static int execute_advanced(Stmt* prog) {
                 if (r.type == V_ARRAY && r.arr->count < r.arr->cap) {
                     int idx = r.arr->count++;
                     char* kk = (char*)malloc(path.str.len + 1);
-                    memcpy(kk, path.str.data, path.str.len);
+                    // ASM ultra copy for route keys
+                    const char* src = path.str.data;
+                    char* dst = kk;
+                    size_t len = path.str.len;
+                    __asm__ volatile (
+                        "rep movsb"
+                        : "+D"(dst), "+S"(src), "+c"(len)
+                        : : "memory"
+                    );
                     kk[path.str.len] = 0;
                     r.arr->entries[idx].key = kk;
                     r.arr->entries[idx].klen = path.str.len;
