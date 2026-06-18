@@ -1,0 +1,10 @@
+﻿ *.exe 
+*.obj 
+*.o 
+build/ 
+vendor/ 
+*.log 
+*.tmp 
+example_laravel/vendor/ 
+nul 
+.DS_Store 
