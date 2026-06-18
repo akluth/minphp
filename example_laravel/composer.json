@@ -1,0 +1,9 @@
+{
+    "name": "laravel/example",
+    "require": {},
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
+    }
+}
